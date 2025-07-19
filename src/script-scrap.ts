@@ -98,7 +98,6 @@ export const scrapAmazon = async (brand: string, model: string, page: any) => {
         const title = await page.locator('span#productTitle').first().textContent();
         console.log('Título:', title?.trim());
         if (title.includes(model)) {
-            console.log('holaaaaaaaaaaaa')
             return { price }
         }
 
@@ -176,7 +175,7 @@ export const scrapMercadoLibre = async (brand: string, model: string, page: any)
 
         let found = false;
 
-        for (let i = 0; i < Math.min(5, count); i++) {
+        for (let i = 0; i < Math.min(10, count); i++) {
             const titleElement = productTitles.nth(i);
             const titleText = (await titleElement.textContent())?.toLowerCase();
 
@@ -190,7 +189,9 @@ export const scrapMercadoLibre = async (brand: string, model: string, page: any)
 
         if (!found) {
             console.warn('⚠️ No se encontró ningún producto que coincida con el modelo en los primeros resultados.');
-            return;
+            console.log('[4] Seleccionando primer resultado...');
+            const firstProduct = page.locator('h3.poly-component__title-wrapper').first();
+            await firstProduct.click();
         }
 
         await page.waitForLoadState('domcontentloaded');
@@ -259,12 +260,13 @@ export const createPage = async () => {
     const browser = await chromium.launch({
         headless: false,
         args: ['--disable-blink-features=AutomationControlled'],
-        // slowMo: 100,
+        slowMo: 100,
     });
 
     const context = await browser.newContext({
         locale: 'en-US',
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
+        viewport: { width: 1280, height: 720 },
         extraHTTPHeaders: {
             'Accept-Language': 'en-US,en;q=0.9'
         }
