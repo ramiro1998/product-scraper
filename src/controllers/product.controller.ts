@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { scrapAmazon, scrapNewEgg } from '../script-scrap';
+import { scrapAmazon, scrapMercadoLibre, scrapNewEgg } from '../script-scrap';
 
 export const getPricesProduct = async (req: Request, res: Response) => {
     const itemNumber = req.params['productId']
@@ -9,6 +9,8 @@ export const getPricesProduct = async (req: Request, res: Response) => {
     const page = dataNewEgg?.page
 
     if (brand && model) {
-        const dataAmazon = await scrapAmazon(brand, model, page)
+        const priceAmazon = await scrapAmazon(brand, model, page)
+        const priceMercadoLibre = await scrapMercadoLibre(brand, model, page)
+        console.log('priceAmazon', priceAmazon, 'priceMercadoLibre', priceMercadoLibre)
     }
 };
