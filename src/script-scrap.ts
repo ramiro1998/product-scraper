@@ -1,13 +1,19 @@
-import { chromium } from 'playwright';
+import { Browser, chromium } from 'playwright';
 import { withRetries } from './utils/dollar';
+import { compareTwoStrings } from 'string-similarity';
+
+
+const SIMILARITY_THRESHOLD = 0.4;
+const MAX_SEARCH_RESULTS_TO_CHECK = 15;
 
 export const scrapNewEgg = async (itemNumber: string) => {
     const url = 'https://www.newegg.com/';
-    let browser = null;
+    let browserInstance: Browser | null = null;
 
     const result = await withRetries(async () => {
-        const { browser: newBrowser, page } = await createPage();
-        browser = newBrowser;
+        const { browser, page } = await createPage();
+        browserInstance = browser;
+
         try {
             await page.goto(url, { waitUntil: 'domcontentloaded' });
             await page.waitForSelector('div.header2021-search-inner');
@@ -19,7 +25,6 @@ export const scrapNewEgg = async (itemNumber: string) => {
 
             const price = await page.locator('div.price-current').first().textContent();
             await page.waitForTimeout(1000);
-
             const specsTab = page.locator('div[data-nav="Specs"]');
             await specsTab.waitFor({
                 state: 'visible',
@@ -35,25 +40,23 @@ export const scrapNewEgg = async (itemNumber: string) => {
             let brand = null;
             let model = null;
 
-            /* loogking brand and model */
-            for (const row of rows) {
+            for (let i = 0; i < rows.length; i++) {
+                const row = rows[i];
                 const label = await row.$eval('th', el => el.textContent?.trim());
                 const value = await row.$eval('td', el => el.textContent?.trim());
 
                 if (label === 'Brand') brand = value;
                 if (label === 'Model') model = value;
             }
-
             return { brand, model, price };
         } finally {
-            if (browser) {
-                await browser.close();
+            if (browserInstance) {
+                await browserInstance.close();
             }
         }
     }, { maxRetries: 2, initialDelayMs: 2000 });
 
     if (!result) {
-        console.error('NewEgg scraping failed after many attempts.');
         return null;
     }
     return result;
@@ -62,7 +65,7 @@ export const scrapNewEgg = async (itemNumber: string) => {
 
 export const scrapAmazon = async (brand: string, model: string) => {
     const url = 'https://www.amazon.com/?language=en_US';
-    let browserInstance = null;
+    let browserInstance: Browser | null = null;
 
     const result = await withRetries(async () => {
         const { browser, page } = await createPage();
@@ -73,39 +76,99 @@ export const scrapAmazon = async (brand: string, model: string) => {
             await page.waitForSelector('#twotabsearchtextbox, #nav-bb-search');
             await page.click('input[type="text"]');
             const searchTerm = `${brand} ${model}`;
-
             await page.fill('input[type="text"]', searchTerm);
             await page.keyboard.press('Enter');
             await page.waitForSelector('#search', { timeout: 10000 });
 
+            await page.waitForSelector('a.a-link-normal.s-line-clamp-2.s-link-style.a-text-normal', { timeout: 10000 })
+                .catch(() => { });
+
+            const productLinks = page.locator('a.a-link-normal.s-line-clamp-2.s-link-style.a-text-normal');
+            const productCount = await productLinks.count();
+
             const noResultsLocator = page.locator('h2 span:has-text("No results for")');
-            let price;
-            if (await noResultsLocator.count() > 0) {
-                price = '0';
-                return { price };
+            if (await noResultsLocator.count() > 0 || productCount === 0) {
+                return { price: '0' };
             }
-            const firstProduct = page.locator('a.a-link-normal.s-line-clamp-2.s-link-style.a-text-normal').first();
-            await firstProduct.click();
+
+            let productToClick: any = null;
+            let productToClickTitle = null;
+            let bestFuzzyScore = -1;
+            let firstOptionAsFallback = false
+
+            for (let i = 0; i < Math.min(MAX_SEARCH_RESULTS_TO_CHECK, productCount); i++) {
+                const currentLink = productLinks.nth(i);
+                const currentTitle = await currentLink.textContent();
+
+                if (currentTitle) {
+                    const currentTitleLower = currentTitle.toLowerCase();
+                    const modelLower = model.toLowerCase();
+
+                    if (currentTitleLower.includes(modelLower)) {
+                        productToClick = currentLink;
+                        productToClickTitle = currentTitle.trim();
+                        break;
+                    }
+                }
+            }
+
+            if (!productToClick) {
+                for (let i = 0; i < Math.min(MAX_SEARCH_RESULTS_TO_CHECK, productCount); i++) {
+                    const currentLink = productLinks.nth(i);
+                    const currentTitle = await currentLink.textContent();
+
+                    if (currentTitle) {
+                        const fuzzySimilarity = compareTwoStrings(searchTerm.toLowerCase(), currentTitle.toLowerCase());
+
+                        if (fuzzySimilarity > bestFuzzyScore) {
+                            bestFuzzyScore = fuzzySimilarity;
+                            productToClick = currentLink;
+                            productToClickTitle = currentTitle.trim();
+                        }
+                    }
+                }
+
+                if (!productToClick || bestFuzzyScore < SIMILARITY_THRESHOLD) {
+                    productToClick = null;
+                }
+            }
+
+            if (!productToClick) {
+                const firstProduct = page.locator('a.a-link-normal.s-line-clamp-2.s-link-style.a-text-normal').first();
+                if (await firstProduct.count() > 0) {
+                    productToClick = firstProduct;
+                    productToClickTitle = (await firstProduct.textContent())?.trim()
+                    firstOptionAsFallback = true
+                } else {
+                    return { price: '0' };
+                }
+            }
+
+            await productToClick.click();
 
             await page.waitForLoadState('domcontentloaded');
 
-            await page.waitForSelector('span.a-price span.a-offscreen', { timeout: 5000 });
-            price = await page.locator('span.a-price span.a-offscreen').first().textContent();
+            const priceLocator = page.locator('.priceToPay').first();
+            let price: string | null = '0';
 
-            const title = await page.locator('span#productTitle').first().textContent();
-            if (title?.toLowerCase().includes(model.toLowerCase())) {
-                return { price };
+            try {
+                await priceLocator.waitFor({ state: 'visible', timeout: 5000 });
+                price = await priceLocator.textContent();
+            } catch (error) {
+                price = '0';
             }
+            // const productPageTitle = await page.locator('span#productTitle').first().textContent();
 
-            await page.waitForSelector('#prodDetails', { timeout: 5000 });
+            // if (!productPageTitle?.toLowerCase().includes(model.toLowerCase())) {
+            //     price = '0';
+            // }
+
+            await page.waitForSelector('#productDetails_detailBullets_sections1', { timeout: 5000 }).catch(() => { });
 
             const parentSelector = '#prodDetails';
-
             const parentExists = await page.locator(parentSelector).count();
-            let modelMatch = false;
-            if (parentExists === 0) {
-                console.log('#prodDetails not found');
-            } else {
+            let modelMatchInDetails = false;
+            if (parentExists !== 0) {
                 const tables = page.locator(`${parentSelector} table`);
                 const tableCount = await tables.count();
 
@@ -124,16 +187,17 @@ export const scrapAmazon = async (brand: string, model: string) => {
 
                         if (k && v) {
                             if (v.toLowerCase().includes(model.toLowerCase())) {
-                                console.log(`• ${k}: ${v}`);
-                                modelMatch = true;
+                                modelMatchInDetails = true;
                             }
                         }
                     }
                 }
-
             }
-            console.log('Scraping Amazon finished!');
-            if (!modelMatch) price = '0';
+
+            /* no match in details and was the first option, means model is not include in details or title */
+            if (!modelMatchInDetails && firstOptionAsFallback) {
+                price = '0';
+            }
             return { price };
         } finally {
             if (browserInstance) {
@@ -143,7 +207,7 @@ export const scrapAmazon = async (brand: string, model: string) => {
     }, { maxRetries: 2, initialDelayMs: 2000 });
 
     if (!result) {
-        console.error('Amazon scraping failed after many attempts.');
+        return null;
     }
     return result;
 };
@@ -151,7 +215,7 @@ export const scrapAmazon = async (brand: string, model: string) => {
 
 export const scrapMercadoLibre = async (brand: string, model: string) => {
     const url = 'https://www.mercadolibre.com.ar/';
-    let browserInstance = null;
+    let browserInstance: Browser | null = null;
 
     const result = await withRetries(async () => {
         const { browser, page } = await createPage();
@@ -168,37 +232,76 @@ export const scrapMercadoLibre = async (brand: string, model: string) => {
 
             await page.waitForSelector('li.ui-search-layout__item');
 
-            const productTitles = page.locator('h3.poly-component__title-wrapper');
-            const count = await productTitles.count();
+            const productTitlesElements = page.locator('h3.poly-component__title-wrapper');
+            const productCount = await productTitlesElements.count();
 
-            let found = false;
+            let productToClick: any = null;
+            let productToClickTitle = null;
+            let bestFuzzyScore = -1;
+            let firstOptionAsFallback = false
 
-            for (let i = 0; i < Math.min(10, count); i++) {
-                const titleElement = productTitles.nth(i);
-                const titleText = (await titleElement.textContent())?.toLowerCase();
+            for (let i = 0; i < Math.min(MAX_SEARCH_RESULTS_TO_CHECK, productCount); i++) {
+                const currentTitleElement = productTitlesElements.nth(i);
+                const currentTitle = await currentTitleElement.textContent();
 
-                if (titleText?.includes(model.toLowerCase())) {
-                    await titleElement.click();
-                    found = true;
-                    break;
+                if (currentTitle) {
+                    const currentTitleLower = currentTitle.toLowerCase();
+                    const modelLower = model.toLowerCase();
+
+                    if (currentTitleLower.includes(modelLower)) {
+                        productToClick = currentTitleElement;
+                        productToClickTitle = currentTitle.trim();
+                        break;
+                    }
                 }
             }
 
-            if (!found) {
-                console.warn('Model not found in first 10 listed products (reading title), then first is selected.');
-                const firstProduct = page.locator('h3.poly-component__title-wrapper').first();
-                await firstProduct.click();
+            if (!productToClick) {
+                for (let i = 0; i < Math.min(MAX_SEARCH_RESULTS_TO_CHECK, productCount); i++) {
+                    const currentTitleElement = productTitlesElements.nth(i);
+                    const currentTitle = await currentTitleElement.textContent();
+
+                    if (currentTitle) {
+                        const fuzzySimilarity = compareTwoStrings(searchTerm.toLowerCase(), currentTitle.toLowerCase());
+
+                        if (fuzzySimilarity > bestFuzzyScore) {
+                            bestFuzzyScore = fuzzySimilarity;
+                            productToClick = currentTitleElement;
+                            productToClickTitle = currentTitle.trim();
+                        }
+                    }
+                }
+
+                if (!productToClick || bestFuzzyScore < SIMILARITY_THRESHOLD) {
+                    productToClick = null;
+                }
             }
+
+            if (!productToClick) {
+                const firstProduct = page.locator('h3.poly-component__title-wrapper').first();
+                if (await firstProduct.count() > 0) {
+                    productToClick = firstProduct;
+                    productToClickTitle = (await firstProduct.textContent())?.trim()
+                    firstOptionAsFallback = true
+                } else {
+                    return { price: '0' };
+                }
+            }
+
+            await productToClick.click();
+
 
             await page.waitForLoadState('domcontentloaded');
 
-            await page.waitForSelector('[data-testid="price-part"] span.andes-money-amount__fraction', { timeout: 10000 });
-            let price = await page.locator('[data-testid="price-part"] span.andes-money-amount__fraction').first().textContent();
 
-            const title = await page.locator('h1.ui-pdp-title').first().textContent();
+            const priceLocator = page.locator('[data-testid="price-part"] span.andes-money-amount__fraction').first();
+            let price: string | null = '0';
 
-            if (title?.toLowerCase().includes(model.toLowerCase())) {
-                return { price };
+            try {
+                await priceLocator.waitFor({ state: 'visible', timeout: 5000 });
+                price = await priceLocator.textContent();
+            } catch (error) {
+                price = '0';
             }
 
             const expandButton = page.locator('button[data-testid="action-collapsable-target"]');
@@ -208,14 +311,12 @@ export const scrapMercadoLibre = async (brand: string, model: string) => {
                 await page.waitForTimeout(1000);
             }
 
-            let modelMatch = false;
+            let modelMatchInDetails = false;
 
             const specRows = page.locator('#highlighted_specs_attrs table tr');
 
             const rowCount = await specRows.count();
-            if (rowCount === 0) {
-                console.log('Spec rows not found');
-            } else {
+            if (rowCount !== 0) {
                 for (let i = 0; i < rowCount; i++) {
                     const row = specRows.nth(i);
                     const key = await row.locator('th, td').first().textContent();
@@ -225,16 +326,17 @@ export const scrapMercadoLibre = async (brand: string, model: string) => {
                     const v = value?.trim();
 
                     if (k && v) {
-                        console.log(`• ${k}: ${v}`);
                         if (v.toLowerCase().includes(model.toLowerCase())) {
-                            modelMatch = true;
+                            modelMatchInDetails = true;
                         }
                     }
                 }
-
             }
-            console.log('MercadoLibre scraping finished');
-            if (!modelMatch) price = '0';
+            /* no match in details and was the first option, means model is not include in details or title */
+            if (!modelMatchInDetails && firstOptionAsFallback) {
+                price = '0';
+            }
+            await page.waitForTimeout(5000);
             return { price };
         } finally {
             if (browserInstance) {
@@ -244,7 +346,7 @@ export const scrapMercadoLibre = async (brand: string, model: string) => {
     }, { maxRetries: 2, initialDelayMs: 2000 });
 
     if (!result) {
-        console.error('MercadoLibre scraping failed after many attempts.');
+        return null;
     }
     return result;
 };
@@ -256,7 +358,7 @@ export const createPage = async () => {
     const browser = await chromium.launch({
         headless: false,
         args: ['--disable-blink-features=AutomationControlled'],
-        slowMo: 100,
+        slowMo: 500,
     });
 
     const context = await browser.newContext({

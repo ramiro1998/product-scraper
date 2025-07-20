@@ -17,14 +17,15 @@ export const getPricesProduct = async (req: Request, res: Response) => {
         const dollar = await getDollarOfficial();
         let priceMLusd = null;
 
-        if (dollar && priceMercadoLibre?.price) {
-            const priceString = priceMercadoLibre.price.replace(/\./g, '').replace(',', '.');
-            const priceNumber = parseFloat(priceString);
+        if (dollar && priceMercadoLibre?.price && priceMercadoLibre.price !== '0') {
+            const priceStringCleaned = priceMercadoLibre.price.replace(/\./g, '').replace(',', '.');
+            const priceNumber = parseFloat(priceStringCleaned);
 
             if (!isNaN(priceNumber)) {
                 priceMLusd = (priceNumber / dollar.price).toFixed(2);
             }
         }
+
 
         console.log('Prices:');
         console.log('• NewEgg:', formatUSD(dataNewEgg.price));
@@ -35,7 +36,7 @@ export const getPricesProduct = async (req: Request, res: Response) => {
             newegg: dataNewEgg.price,
             amazon: priceAmazon?.price,
             mercadolibre: {
-                ars: `$${priceMercadoLibre?.price}`,
+                ars: priceMercadoLibre?.price ? `$${priceMercadoLibre.price.replace(/\./g, ',')}` : '$0',
                 usd: `$${priceMLusd}`
             }
         });
