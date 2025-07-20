@@ -1,6 +1,5 @@
 const express = require('express');
 import productRoutes from "./routes/product.routes";
-import { scrapNewEgg } from "./script-scrap";
 
 
 

@@ -1,46 +1,32 @@
 import { Request, Response } from 'express';
 import { scrapAmazon, scrapMercadoLibre, scrapNewEgg } from '../script-scrap';
-import { getDollarOfficial } from '../utils/getDollarPrice';
+import { formatUSD, getDollarOfficial } from '../utils/dollar';
 
-const formatUSD = (value: string | number | undefined | null): string => {
-    if (!value) return 'N/A';
-    const number = typeof value === 'string'
-        ? parseFloat(value.replace(/[^0-9.]/g, ''))
-        : value;
-    return isNaN(number) ? 'N/A' : `${number.toFixed(2)} USD`;
-};
 
 export const getPricesProduct = async (req: Request, res: Response) => {
     const itemNumber = req.params['productId'];
     const dataNewEgg = await scrapNewEgg(itemNumber);
     const brand = dataNewEgg?.brand;
     const model = dataNewEgg?.model;
-    const page = dataNewEgg?.page;
 
     if (brand && model) {
 
-        const priceAmazon = await scrapAmazon(brand, model, page)
-        const priceMercadoLibre = await scrapMercadoLibre(brand, model, page)
+        const priceAmazon = await scrapAmazon(brand, model)
+        const priceMercadoLibre = await scrapMercadoLibre(brand, model)
 
         const dollar = await getDollarOfficial();
-        console.log('dollar', dollar)
         let priceMLusd = null;
 
         if (dollar && priceMercadoLibre?.price) {
-            console.log('Precio original ML:', priceMercadoLibre.price);
             const priceString = priceMercadoLibre.price.replace(/\./g, '').replace(',', '.');
-            console.log('Precio parseado ML:', priceString);
             const priceNumber = parseFloat(priceString);
-            console.log('Número parseado:', priceNumber);
 
             if (!isNaN(priceNumber)) {
                 priceMLusd = (priceNumber / dollar.price).toFixed(2);
-            } else {
-                console.warn('❌ No se pudo parsear el precio de MercadoLibre.');
             }
         }
 
-        console.log('💰 Precios:');
+        console.log('Prices:');
         console.log('• NewEgg:', formatUSD(dataNewEgg.price));
         console.log('• Amazon:', formatUSD(priceAmazon?.price));
         console.log('• MercadoLibre:', `${priceMercadoLibre?.price} ARS (≈ ${priceMLusd} USD)`);
@@ -49,8 +35,8 @@ export const getPricesProduct = async (req: Request, res: Response) => {
             newegg: dataNewEgg.price,
             amazon: priceAmazon?.price,
             mercadolibre: {
-                ars: priceMercadoLibre?.price,
-                usd: priceMLusd
+                ars: `$${priceMercadoLibre?.price}`,
+                usd: `$${priceMLusd}`
             }
         });
     } else {
