@@ -88,13 +88,12 @@ export const scrapAmazon = async (brand: string, model: string) => {
 
             const noResultsLocator = page.locator('h2 span:has-text("No results for")');
             if (await noResultsLocator.count() > 0 || productCount === 0) {
-                return { price: '0' };
+                return { price: null };
             }
 
             let productToClick: any = null;
             let productToClickTitle = null;
             let bestFuzzyScore = -1;
-            let firstOptionAsFallback = false
 
             for (let i = 0; i < Math.min(MAX_SEARCH_RESULTS_TO_CHECK, productCount); i++) {
                 const currentLink = productLinks.nth(i);
@@ -138,9 +137,8 @@ export const scrapAmazon = async (brand: string, model: string) => {
                 if (await firstProduct.count() > 0) {
                     productToClick = firstProduct;
                     productToClickTitle = (await firstProduct.textContent())?.trim()
-                    firstOptionAsFallback = true
                 } else {
-                    return { price: '0' };
+                    return { price: null };
                 }
             }
 
@@ -155,13 +153,8 @@ export const scrapAmazon = async (brand: string, model: string) => {
                 await priceLocator.waitFor({ state: 'visible', timeout: 5000 });
                 price = await priceLocator.textContent();
             } catch (error) {
-                price = '0';
+                price = null;
             }
-            // const productPageTitle = await page.locator('span#productTitle').first().textContent();
-
-            // if (!productPageTitle?.toLowerCase().includes(model.toLowerCase())) {
-            //     price = '0';
-            // }
 
             await page.waitForSelector('#productDetails_detailBullets_sections1', { timeout: 5000 }).catch(() => { });
 
@@ -194,9 +187,8 @@ export const scrapAmazon = async (brand: string, model: string) => {
                 }
             }
 
-            /* no match in details and was the first option, means model is not include in details or title */
-            if (!modelMatchInDetails && firstOptionAsFallback) {
-                price = '0';
+            if (!modelMatchInDetails) {
+                price = null;
             }
             return { price };
         } finally {
@@ -238,7 +230,6 @@ export const scrapMercadoLibre = async (brand: string, model: string) => {
             let productToClick: any = null;
             let productToClickTitle = null;
             let bestFuzzyScore = -1;
-            let firstOptionAsFallback = false
 
             for (let i = 0; i < Math.min(MAX_SEARCH_RESULTS_TO_CHECK, productCount); i++) {
                 const currentTitleElement = productTitlesElements.nth(i);
@@ -282,9 +273,8 @@ export const scrapMercadoLibre = async (brand: string, model: string) => {
                 if (await firstProduct.count() > 0) {
                     productToClick = firstProduct;
                     productToClickTitle = (await firstProduct.textContent())?.trim()
-                    firstOptionAsFallback = true
                 } else {
-                    return { price: '0' };
+                    return { price: null };
                 }
             }
 
@@ -295,13 +285,13 @@ export const scrapMercadoLibre = async (brand: string, model: string) => {
 
 
             const priceLocator = page.locator('[data-testid="price-part"] span.andes-money-amount__fraction').first();
-            let price: string | null = '0';
+            let price = null;
 
             try {
                 await priceLocator.waitFor({ state: 'visible', timeout: 5000 });
                 price = await priceLocator.textContent();
             } catch (error) {
-                price = '0';
+                price = null;
             }
 
             const expandButton = page.locator('button[data-testid="action-collapsable-target"]');
@@ -332,12 +322,13 @@ export const scrapMercadoLibre = async (brand: string, model: string) => {
                     }
                 }
             }
-            /* no match in details and was the first option, means model is not include in details or title */
-            if (!modelMatchInDetails && firstOptionAsFallback) {
-                price = '0';
+
+            if (!modelMatchInDetails) {
+                price = null;
             }
-            await page.waitForTimeout(5000);
+
             return { price };
+
         } finally {
             if (browserInstance) {
                 await browserInstance.close();
