@@ -7,12 +7,13 @@ export const getPricesProduct = async (req: Request, res: Response) => {
     const itemNumber = req.params['productId'];
     const dataNewEgg = await scrapNewEgg(itemNumber);
     const brand = dataNewEgg?.brand;
-    const model = dataNewEgg?.model;
+    const model = dataNewEgg?.model ?? '';
+    const partNumber = dataNewEgg?.partNumber ?? '';
 
-    if (brand && model) {
+    if (brand && (model || partNumber)) {
 
-        const priceAmazon = await scrapAmazon(brand, model)
-        const priceMercadoLibre = await scrapMercadoLibre(brand, model)
+        const priceAmazon = await scrapAmazon(brand, model, partNumber)
+        const priceMercadoLibre = await scrapMercadoLibre(brand, model, partNumber)
 
         const dollar = await getDollarOfficial();
         let priceMLusd = null;

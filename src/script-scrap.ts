@@ -39,6 +39,7 @@ export const scrapNewEgg = async (itemNumber: string) => {
 
             let brand = null;
             let model = null;
+            let partNumber = null;
 
             for (let i = 0; i < rows.length; i++) {
                 const row = rows[i];
@@ -47,8 +48,9 @@ export const scrapNewEgg = async (itemNumber: string) => {
 
                 if (label === 'Brand') brand = value;
                 if (label === 'Model') model = value;
+                if (label === 'Part Number') partNumber = value;
             }
-            return { brand, model, price };
+            return { brand, model, partNumber, price };
         } finally {
             if (browserInstance) {
                 await browserInstance.close();
@@ -63,7 +65,7 @@ export const scrapNewEgg = async (itemNumber: string) => {
 };
 
 
-export const scrapAmazon = async (brand: string, model: string) => {
+export const scrapAmazon = async (brand: string, model: string, partNumber: string | null) => {
     const url = 'https://www.amazon.com/?language=en_US';
     let browserInstance: Browser | null = null;
 
@@ -75,7 +77,8 @@ export const scrapAmazon = async (brand: string, model: string) => {
             await page.goto(url, { waitUntil: 'domcontentloaded' });
             await page.waitForSelector('#twotabsearchtextbox, #nav-bb-search');
             await page.click('input[type="text"]');
-            const searchTerm = `${brand} ${model}`;
+
+            const searchTerm = `${brand} ${model} ${partNumber || ''}`.trim();
             await page.fill('input[type="text"]', searchTerm);
             await page.keyboard.press('Enter');
             await page.waitForSelector('#search', { timeout: 10000 });
@@ -92,8 +95,11 @@ export const scrapAmazon = async (brand: string, model: string) => {
             }
 
             let productToClick: any = null;
-            let productToClickTitle = null;
-            let bestFuzzyScore = -1;
+            let productToClickTitle: string | null = null;
+            let bestExactMatchScore = -1;
+            let bestFuzzyMatchScore = -1;
+
+            let exactMatchFoundInLoop = false;
 
             for (let i = 0; i < Math.min(MAX_SEARCH_RESULTS_TO_CHECK, productCount); i++) {
                 const currentLink = productLinks.nth(i);
@@ -102,11 +108,20 @@ export const scrapAmazon = async (brand: string, model: string) => {
                 if (currentTitle) {
                     const currentTitleLower = currentTitle.toLowerCase();
                     const modelLower = model.toLowerCase();
+                    const partNumberLower = partNumber?.toLowerCase() || '';
 
-                    if (currentTitleLower.includes(modelLower)) {
-                        productToClick = currentLink;
-                        productToClickTitle = currentTitle.trim();
-                        break;
+                    const isModelInTitle = modelLower.length > 0 && currentTitleLower.includes(modelLower);
+                    const isPartNumberInTitle = partNumberLower.length > 0 && currentTitleLower.includes(partNumberLower);
+
+                    if (isModelInTitle || isPartNumberInTitle) {
+                        const currentSimilarity = compareTwoStrings(searchTerm.toLowerCase(), currentTitleLower);
+
+                        if (!exactMatchFoundInLoop || currentSimilarity > bestExactMatchScore) {
+                            bestExactMatchScore = currentSimilarity;
+                            productToClick = currentLink;
+                            productToClickTitle = currentTitle.trim();
+                            exactMatchFoundInLoop = true;
+                        }
                     }
                 }
             }
@@ -119,15 +134,15 @@ export const scrapAmazon = async (brand: string, model: string) => {
                     if (currentTitle) {
                         const fuzzySimilarity = compareTwoStrings(searchTerm.toLowerCase(), currentTitle.toLowerCase());
 
-                        if (fuzzySimilarity > bestFuzzyScore) {
-                            bestFuzzyScore = fuzzySimilarity;
+                        if (fuzzySimilarity > bestFuzzyMatchScore) {
+                            bestFuzzyMatchScore = fuzzySimilarity;
                             productToClick = currentLink;
                             productToClickTitle = currentTitle.trim();
                         }
                     }
                 }
 
-                if (!productToClick || bestFuzzyScore < SIMILARITY_THRESHOLD) {
+                if (productToClick && bestFuzzyMatchScore < SIMILARITY_THRESHOLD) {
                     productToClick = null;
                 }
             }
@@ -136,7 +151,7 @@ export const scrapAmazon = async (brand: string, model: string) => {
                 const firstProduct = page.locator('a.a-link-normal.s-line-clamp-2.s-link-style.a-text-normal').first();
                 if (await firstProduct.count() > 0) {
                     productToClick = firstProduct;
-                    productToClickTitle = (await firstProduct.textContent())?.trim()
+                    productToClickTitle = (await firstProduct.textContent())?.trim() || 'Primer Producto';
                 } else {
                     return { price: null };
                 }
@@ -147,7 +162,7 @@ export const scrapAmazon = async (brand: string, model: string) => {
             await page.waitForLoadState('domcontentloaded');
 
             const priceLocator = page.locator('.priceToPay').first();
-            let price: string | null = '0';
+            let price = null;
 
             try {
                 await priceLocator.waitFor({ state: 'visible', timeout: 5000 });
@@ -179,7 +194,7 @@ export const scrapAmazon = async (brand: string, model: string) => {
                         const v = value?.trim();
 
                         if (k && v) {
-                            if (v.toLowerCase().includes(model.toLowerCase())) {
+                            if (v.toLowerCase().includes(model.toLowerCase()) || (partNumber && v.toLowerCase().includes(partNumber.toLowerCase()))) {
                                 modelMatchInDetails = true;
                             }
                         }
@@ -205,7 +220,7 @@ export const scrapAmazon = async (brand: string, model: string) => {
 };
 
 
-export const scrapMercadoLibre = async (brand: string, model: string) => {
+export const scrapMercadoLibre = async (brand: string, model: string, partNumber: string | null) => {
     const url = 'https://www.mercadolibre.com.ar/';
     let browserInstance: Browser | null = null;
 
@@ -218,7 +233,7 @@ export const scrapMercadoLibre = async (brand: string, model: string) => {
 
             await page.waitForSelector('input[name="as_word"]');
 
-            const searchTerm = `${brand} ${model}`;
+            const searchTerm = `${brand} ${model} ${partNumber || ''}`.trim();
             await page.fill('input[name="as_word"]', searchTerm);
             await page.keyboard.press('Enter');
 
@@ -228,8 +243,11 @@ export const scrapMercadoLibre = async (brand: string, model: string) => {
             const productCount = await productTitlesElements.count();
 
             let productToClick: any = null;
-            let productToClickTitle = null;
-            let bestFuzzyScore = -1;
+            let productToClickTitle: string | null = null;
+            let bestExactMatchScore = -1;
+            let bestFuzzyMatchScore = -1;
+
+            let exactMatchFoundInLoop = false;
 
             for (let i = 0; i < Math.min(MAX_SEARCH_RESULTS_TO_CHECK, productCount); i++) {
                 const currentTitleElement = productTitlesElements.nth(i);
@@ -238,11 +256,20 @@ export const scrapMercadoLibre = async (brand: string, model: string) => {
                 if (currentTitle) {
                     const currentTitleLower = currentTitle.toLowerCase();
                     const modelLower = model.toLowerCase();
+                    const partNumberLower = partNumber?.toLowerCase() || '';
 
-                    if (currentTitleLower.includes(modelLower)) {
-                        productToClick = currentTitleElement;
-                        productToClickTitle = currentTitle.trim();
-                        break;
+                    const isModelInTitle = modelLower.length > 0 && currentTitleLower.includes(modelLower);
+                    const isPartNumberInTitle = partNumberLower.length > 0 && currentTitleLower.includes(partNumberLower);
+
+                    if (isModelInTitle || isPartNumberInTitle) {
+                        const currentSimilarity = compareTwoStrings(searchTerm.toLowerCase(), currentTitleLower);
+
+                        if (!exactMatchFoundInLoop || currentSimilarity > bestExactMatchScore) {
+                            bestExactMatchScore = currentSimilarity;
+                            productToClick = currentTitleElement;
+                            productToClickTitle = currentTitle.trim();
+                            exactMatchFoundInLoop = true;
+                        }
                     }
                 }
             }
@@ -255,15 +282,15 @@ export const scrapMercadoLibre = async (brand: string, model: string) => {
                     if (currentTitle) {
                         const fuzzySimilarity = compareTwoStrings(searchTerm.toLowerCase(), currentTitle.toLowerCase());
 
-                        if (fuzzySimilarity > bestFuzzyScore) {
-                            bestFuzzyScore = fuzzySimilarity;
+                        if (fuzzySimilarity > bestFuzzyMatchScore) {
+                            bestFuzzyMatchScore = fuzzySimilarity;
                             productToClick = currentTitleElement;
                             productToClickTitle = currentTitle.trim();
                         }
                     }
                 }
 
-                if (!productToClick || bestFuzzyScore < SIMILARITY_THRESHOLD) {
+                if (productToClick && bestFuzzyMatchScore < SIMILARITY_THRESHOLD) {
                     productToClick = null;
                 }
             }
@@ -272,7 +299,7 @@ export const scrapMercadoLibre = async (brand: string, model: string) => {
                 const firstProduct = page.locator('h3.poly-component__title-wrapper').first();
                 if (await firstProduct.count() > 0) {
                     productToClick = firstProduct;
-                    productToClickTitle = (await firstProduct.textContent())?.trim()
+                    productToClickTitle = (await firstProduct.textContent())?.trim() || 'Primer Producto';
                 } else {
                     return { price: null };
                 }
@@ -280,9 +307,7 @@ export const scrapMercadoLibre = async (brand: string, model: string) => {
 
             await productToClick.click();
 
-
             await page.waitForLoadState('domcontentloaded');
-
 
             const priceLocator = page.locator('[data-testid="price-part"] span.andes-money-amount__fraction').first();
             let price = null;
@@ -316,7 +341,7 @@ export const scrapMercadoLibre = async (brand: string, model: string) => {
                     const v = value?.trim();
 
                     if (k && v) {
-                        if (v.toLowerCase().includes(model.toLowerCase())) {
+                        if (v.toLowerCase().includes(model.toLowerCase()) || (partNumber && v.toLowerCase().includes(partNumber.toLowerCase()))) {
                             modelMatchInDetails = true;
                         }
                     }
@@ -326,9 +351,7 @@ export const scrapMercadoLibre = async (brand: string, model: string) => {
             if (!modelMatchInDetails) {
                 price = null;
             }
-
             return { price };
-
         } finally {
             if (browserInstance) {
                 await browserInstance.close();
@@ -341,7 +364,6 @@ export const scrapMercadoLibre = async (brand: string, model: string) => {
     }
     return result;
 };
-
 
 
 
